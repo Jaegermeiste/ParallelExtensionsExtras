@@ -100,7 +100,7 @@ namespace System.Threading
         private IEnumerable<TOutput> ProcessNoArgValidation(IEnumerable<TInput> source, CancellationToken cancellationToken)
         {
             // Create a blocking collection for communication with the query running in a background task
-            using var output = new BlockingCollection<TOutput>();
+            /*using var output = new BlockingCollection<TOutput>();
 
             // Start a task to run the core of the stage
             var processingTask = Task.Factory.StartNew(() =>
@@ -117,7 +117,37 @@ namespace System.Threading
             }
 
             // Make sure the processing task has shut down, and propagate any exceptions that occurred
-            processingTask.Wait();
+            processingTask.Wait();*/
+
+            // DOWNGRADE TO C# 7.3
+
+            // Create a blocking collection for communication with the query running in a background task
+            using (var output = new BlockingCollection<TOutput>())
+            {
+
+                // Start a task to run the core of the stage
+                Task processingTask = Task.Factory.StartNew(() =>
+                {
+                    try
+                    {
+                        ProcessCore(source, cancellationToken, output);
+                    }
+                    finally
+                    {
+                        output.CompleteAdding();
+                    }
+                }, CancellationToken.None, TaskCreationOptions.None, Pipeline.s_scheduler);
+
+                // Enumerate and yield the results.  This makes ProcessNoArgValidation
+                // lazy, in that processing won't start until enumeration begins.
+                foreach (TOutput result in output.GetConsumingEnumerable(cancellationToken))
+                {
+                    yield return result;
+                }
+
+                // Make sure the processing task has shut down, and propagate any exceptions that occurred
+                processingTask.Wait();
+            }
         }
 
         /// <summary>Implements the core processing for a pipeline stage.</summary>

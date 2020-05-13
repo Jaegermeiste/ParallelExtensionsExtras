@@ -41,7 +41,7 @@ namespace System.Threading.Algorithms
             if (source == null) throw new ArgumentNullException(nameof(source));
 
             // Create output copy
-            var output = source.ToArray();
+            T[] output = source.ToArray();
 
             // Do the prefix scan in-place on the copy and return the results
             ScanInPlace(output, function, loadBalance);
@@ -168,7 +168,7 @@ namespace System.Threading.Algorithms
         {
             int procCount = Environment.ProcessorCount;
             T[] intermediatePartials = new T[procCount];
-            using var phaseBarrier =
+            /*using var phaseBarrier =
                 new Barrier(procCount,
                     _ => ExclusiveScanInPlaceSerial(
                         intermediatePartials, function, 0, intermediatePartials.Length));
@@ -206,7 +206,50 @@ namespace System.Threading.Algorithms
             }
 
             // Wait for all of the tasks to complete
-            Task.WaitAll(tasks);
+            Task.WaitAll(tasks);*/
+
+            // DOWNGRADE TO C# 7.3
+            using (var phaseBarrier =
+                new Barrier(procCount,
+                    _ => ExclusiveScanInPlaceSerial(
+                        intermediatePartials, function, 0, intermediatePartials.Length)))
+            {
+
+                // Compute the size of each range
+                int rangeSize = arr.Length / procCount;
+                int nextRangeStart = 0;
+
+                // Create, store, and wait on all of the tasks
+                var tasks = new Task[procCount];
+                for (int i = 0; i < procCount; i++, nextRangeStart += rangeSize)
+                {
+                    // Get the range for each task, then start it
+                    int rangeNum = i;
+                    int lowerRangeInclusive = nextRangeStart;
+                    int upperRangeExclusive = i < procCount - 1 ? nextRangeStart + rangeSize : arr.Length;
+                    tasks[rangeNum] = Task.Factory.StartNew(() =>
+                    {
+                        // Phase 1: Prefix scan assigned range, and copy upper bound to intermediate partials
+                        InclusiveScanInPlaceSerial(arr, function, lowerRangeInclusive, upperRangeExclusive, 1);
+                        intermediatePartials[rangeNum] = arr[upperRangeExclusive - 1];
+
+                        // Phase 2: One thread only should prefix scan the intermediaries... done implicitly by the barrier
+                        phaseBarrier.SignalAndWait();
+
+                        // Phase 3: Incorporate partials
+                        if (rangeNum != 0)
+                        {
+                            for (int j = lowerRangeInclusive; j < upperRangeExclusive; j++)
+                            {
+                                arr[j] = function(intermediatePartials[rangeNum], arr[j]);
+                            }
+                        }
+                    });
+                }
+
+                // Wait for all of the tasks to complete
+                Task.WaitAll(tasks);
+            }
         }
     }
 }
